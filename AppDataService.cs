@@ -5,7 +5,6 @@
 using Microsoft.IdentityModel.JsonWebTokens;
 using System;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -13,78 +12,110 @@ using System.Threading.Tasks;
 
 namespace Samples.Datalayer.Mapper
 {
+    /// <summary>
+    /// What the app data service calls when the Solutions app asks it to load or
+    /// save. An interface rather than callbacks, so the implementation is a named
+    /// class with visible state.
+    /// </summary>
+    internal interface IAppDataHandler
+    {
+        bool Load();
+
+        bool Save();
+    }
+
     /// <summary>Request body sent by the Solutions app for every save/load phase.</summary>
-    internal sealed record AppDataHttpRequest(string ConfigurationPath, string Id, string Phase);
+    internal sealed class AppDataHttpRequest
+    {
+        public string ConfigurationPath { get; set; } = string.Empty;
+
+        public string Id { get; set; } = string.Empty;
+
+        public string Phase { get; set; } = string.Empty;
+
+        public override string ToString()
+        {
+            return "id=" + Id + ", phase=" + Phase + ", path=" + ConfigurationPath;
+        }
+    }
 
     [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
     [JsonSerializable(typeof(AppDataHttpRequest))]
-    internal partial class AppDataHttpRequestSerializerContext : JsonSerializerContext { }
+    internal partial class AppDataHttpRequestSerializerContext : JsonSerializerContext
+    {
+    }
 
     /// <summary>
     /// Registers the app in the ctrlX save/load workflow (app.solutions).
     ///
     /// A light-weight HttpListener serves the two commands declared in
-    /// *.package-manifest.json. On "load" the mapping configuration is re-read from
-    /// the active configuration and re-applied without restarting the app.
+    /// *.package-manifest.json.
     /// </summary>
     internal sealed class AppDataService : IDisposable
     {
         private const int HttpPort = 5556;
         private const string AppId = "sdk-net-datalayer-mapper";
+        private const string RequiredScope = "rexroth-device.all.rwx";
 
-        private static readonly string HttpApiRouteLoad = $"http://localhost:{HttpPort}/{AppId}/api/v1/load";
-        private static readonly string HttpApiRouteSave = $"http://localhost:{HttpPort}/{AppId}/api/v1/save";
+        private static readonly string HttpApiRouteLoad =
+            "http://localhost:" + HttpPort + "/" + AppId + "/api/v1/load";
 
-        private readonly Func<bool> _onLoad;
-        private readonly Func<bool> _onSave;
+        private static readonly string HttpApiRouteSave =
+            "http://localhost:" + HttpPort + "/" + AppId + "/api/v1/save";
+
+        private readonly IAppDataHandler _handler;
         private HttpListener? _httpListener;
 
-        /// <param name="onLoad">Re-reads the configuration and re-applies it. Returns success.</param>
-        /// <param name="onSave">Persists the current configuration into the appdata directory.</param>
-        public AppDataService(Func<bool> onLoad, Func<bool> onSave)
+        public AppDataService(IAppDataHandler handler)
         {
-            _onLoad = onLoad ?? throw new ArgumentNullException(nameof(onLoad));
-            _onSave = onSave ?? throw new ArgumentNullException(nameof(onSave));
+            if (handler == null)
+            {
+                throw new ArgumentNullException(nameof(handler));
+            }
+
+            _handler = handler;
         }
 
         public bool Start()
         {
+            if (!HttpListener.IsSupported)
+            {
+                Console.WriteLine("HTTP listening not supported!");
+                return false;
+            }
+
             try
             {
-                if (!HttpListener.IsSupported)
-                {
-                    Console.WriteLine("HTTP listening not supported!");
-                    return false;
-                }
+                HttpListener listener = new HttpListener();
+                listener.Prefixes.Add(HttpApiRouteLoad + "/");
+                listener.Prefixes.Add(HttpApiRouteSave + "/");
+                listener.Start();
 
-                _httpListener = new HttpListener();
-                _httpListener.Prefixes.Add(HttpApiRouteLoad + "/");
-                _httpListener.Prefixes.Add(HttpApiRouteSave + "/");
-                _httpListener.Start();
-
-                if (!_httpListener.IsListening)
+                if (!listener.IsListening)
                 {
                     Console.WriteLine("Listening to HTTP failed!");
                     return false;
                 }
 
-                Console.WriteLine($"Listening to HTTP: {string.Join(", ", _httpListener.Prefixes)}");
+                _httpListener = listener;
+
+                Console.WriteLine("Listening to HTTP: " + HttpApiRouteLoad + ", " + HttpApiRouteSave);
 
                 Task.Factory.StartNew(Listen, TaskCreationOptions.LongRunning);
                 return true;
             }
             catch (HttpListenerException exc)
             {
-                Console.WriteLine($"Listening to HTTP failed! {exc.Message}");
+                Console.WriteLine("Listening to HTTP failed! " + exc.Message);
                 return false;
             }
         }
 
         private void Listen()
         {
-            var listener = _httpListener;
+            HttpListener? listener = _httpListener;
 
-            while (listener is { IsListening: true })
+            while (listener != null && listener.IsListening)
             {
                 HttpListenerContext context;
 
@@ -93,85 +124,132 @@ namespace Samples.Datalayer.Mapper
                     // Blocks until the next request arrives.
                     context = listener.GetContext();
                 }
-                catch (Exception exc) when (exc is HttpListenerException || exc is ObjectDisposedException)
+                catch (HttpListenerException)
                 {
-                    // Listener stopped.
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
                     return;
                 }
 
-                var request = context.Request;
-                var response = context.Response;
-
-                try
-                {
-                    Console.WriteLine($"Request: {request.Url}");
-
-                    var jwt = GetToken(request);
-                    if (jwt is null || !IsAuthorized(jwt))
-                    {
-                        response.StatusCode = (int)HttpStatusCode.Unauthorized;
-                        continue;
-                    }
-
-                    using var reader = new StreamReader(request.InputStream, request.ContentEncoding);
-                    var appDataHttpRequest = JsonSerializer.Deserialize(
-                        reader.ReadToEnd(),
-                        AppDataHttpRequestSerializerContext.Default.AppDataHttpRequest);
-
-                    var phase = appDataHttpRequest?.Phase ?? string.Empty;
-                    var route = request.Url?.ToString() ?? string.Empty;
-
-                    Console.WriteLine($"Payload: {appDataHttpRequest}");
-
-                    response.StatusCode = route.Equals(HttpApiRouteLoad, StringComparison.Ordinal)
-                        ? HandleLoad(phase, appDataHttpRequest?.Id)
-                        : route.Equals(HttpApiRouteSave, StringComparison.Ordinal)
-                            ? HandleSave(phase, appDataHttpRequest?.Id)
-                            : (int)HttpStatusCode.NotFound;
-                }
-                catch (Exception exc)
-                {
-                    // We must ALWAYS answer, whatever happens.
-                    Console.WriteLine($"Failed to handle app data request! {exc.Message}");
-                    response.StatusCode = (int)HttpStatusCode.InternalServerError;
-                }
-                finally
-                {
-                    response.Close();
-                }
+                HandleRequest(context);
             }
         }
 
-        private int HandleLoad(string phase, string? id) => phase switch
+        private void HandleRequest(HttpListenerContext context)
+        {
+            HttpListenerRequest request = context.Request;
+            HttpListenerResponse response = context.Response;
+
+            try
+            {
+                Console.WriteLine("Request: " + request.Url);
+
+                JsonWebToken? jwt = GetToken(request);
+
+                if (jwt == null || !IsAuthorized(jwt))
+                {
+                    response.StatusCode = (int)HttpStatusCode.Unauthorized;
+                    return;
+                }
+
+                AppDataHttpRequest? payload = ReadPayload(request);
+                string phase = string.Empty;
+
+                if (payload != null)
+                {
+                    phase = payload.Phase;
+                    Console.WriteLine("Payload: " + payload);
+                }
+
+                string route = string.Empty;
+
+                if (request.Url != null)
+                {
+                    route = request.Url.ToString();
+                }
+
+                if (string.Equals(route, HttpApiRouteLoad, StringComparison.Ordinal))
+                {
+                    response.StatusCode = HandleLoad(phase);
+                }
+                else if (string.Equals(route, HttpApiRouteSave, StringComparison.Ordinal))
+                {
+                    response.StatusCode = HandleSave(phase);
+                }
+                else
+                {
+                    response.StatusCode = (int)HttpStatusCode.NotFound;
+                }
+            }
+            catch (Exception exc)
+            {
+                // We must ALWAYS answer, whatever happens.
+                Console.WriteLine("Failed to handle app data request! " + exc.Message);
+                response.StatusCode = (int)HttpStatusCode.InternalServerError;
+            }
+            finally
+            {
+                response.Close();
+            }
+        }
+
+        private static AppDataHttpRequest? ReadPayload(HttpListenerRequest request)
+        {
+            using StreamReader reader = new StreamReader(request.InputStream, request.ContentEncoding);
+
+            string body = reader.ReadToEnd();
+
+            return JsonSerializer.Deserialize(
+                body,
+                AppDataHttpRequestSerializerContext.Default.AppDataHttpRequest);
+        }
+
+        private int HandleLoad(string phase)
         {
             // Provide resources according to the data of the active configuration.
-            "load" => _onLoad()
-                ? (int)HttpStatusCode.Accepted
-                : (int)HttpStatusCode.InternalServerError,
+            if (string.Equals(phase, "load", StringComparison.Ordinal))
+            {
+                if (_handler.Load())
+                {
+                    return (int)HttpStatusCode.Accepted;
+                }
+
+                return (int)HttpStatusCode.InternalServerError;
+            }
 
             // query / prepare / validate / activate / abort and any future phase:
             // 204 keeps the workflow going and stays upwards compatible.
-            _ => (int)HttpStatusCode.NoContent,
-        };
+            return (int)HttpStatusCode.NoContent;
+        }
 
-        private int HandleSave(string phase, string? id) => phase switch
+        private int HandleSave(string phase)
         {
-            "save" => _onSave()
-                ? (int)HttpStatusCode.Accepted
-                : (int)HttpStatusCode.InternalServerError,
+            if (string.Equals(phase, "save", StringComparison.Ordinal))
+            {
+                if (_handler.Save())
+                {
+                    return (int)HttpStatusCode.Accepted;
+                }
 
-            _ => (int)HttpStatusCode.NoContent,
-        };
+                return (int)HttpStatusCode.InternalServerError;
+            }
+
+            return (int)HttpStatusCode.NoContent;
+        }
 
         private static JsonWebToken? GetToken(HttpListenerRequest request)
         {
-            var authorization = request.Headers["Authorization"];
+            string? authorization = request.Headers["Authorization"];
+
             if (string.IsNullOrEmpty(authorization))
             {
                 return null;
             }
 
-            var token = authorization.Split(" ").Last();
+            string[] parts = authorization.Split(' ');
+            string token = parts[parts.Length - 1];
 
             try
             {
@@ -187,8 +265,17 @@ namespace Samples.Datalayer.Mapper
         {
             try
             {
-                var scopes = jwt.GetPayloadValue<string[]>("scope");
-                return scopes.Any(scope => scope.Equals("rexroth-device.all.rwx", StringComparison.Ordinal));
+                string[] scopes = jwt.GetPayloadValue<string[]>("scope");
+
+                for (int i = 0; i < scopes.Length; i++)
+                {
+                    if (string.Equals(scopes[i], RequiredScope, StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
             catch (ArgumentException)
             {
@@ -198,9 +285,16 @@ namespace Samples.Datalayer.Mapper
 
         public void Dispose()
         {
-            _httpListener?.Stop();
-            _httpListener?.Close();
+            HttpListener? listener = _httpListener;
+
+            if (listener == null)
+            {
+                return;
+            }
+
             _httpListener = null;
+            listener.Stop();
+            listener.Close();
         }
     }
 }

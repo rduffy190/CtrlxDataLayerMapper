@@ -6,7 +6,6 @@ using comm.datalayer;
 using Datalayer;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -36,38 +35,50 @@ namespace Samples.Datalayer.Mapper
 
         // Route table: source address -> destination addresses.
         // Never mutated after publication - replaced wholesale on Apply().
-        private Dictionary<string, string[]> _routes = new(StringComparer.Ordinal);
+        private Dictionary<string, string[]> _routes =
+            new Dictionary<string, string[]>(StringComparer.Ordinal);
 
         // Double buffer of pending writes, keyed by destination address.
         // The callback fills _activeBuffer; the flush loop swaps it out and owns
         // the retired buffer exclusively until it has been written and cleared.
-        private Dictionary<string, IVariant> _activeBuffer = new(StringComparer.Ordinal);
-        private Dictionary<string, IVariant> _spareBuffer = new(StringComparer.Ordinal);
-        private readonly object _swapLock = new();
+        private Dictionary<string, IVariant> _activeBuffer =
+            new Dictionary<string, IVariant>(StringComparer.Ordinal);
+        private Dictionary<string, IVariant> _spareBuffer =
+            new Dictionary<string, IVariant>(StringComparer.Ordinal);
+        private readonly object _swapLock = new object();
 
-        private readonly SemaphoreSlim _flushSignal = new(0, 1);
-        private readonly CancellationTokenSource _cts = new();
+        private readonly SemaphoreSlim _flushSignal = new SemaphoreSlim(0, 1);
+        private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
 
         private int _signaled;
         private Task? _flushTask;
         private ISubscription? _subscription;
-        private MapperConfig _config = new();
+        private MapperConfig _config = new MapperConfig();
 
         public NodeMapper(IClient client)
         {
-            _client = client ?? throw new ArgumentNullException(nameof(client));
+            if (client == null)
+            {
+                throw new ArgumentNullException(nameof(client));
+            }
+
+            _client = client;
         }
 
         /// <summary>
-        /// Applies a configuration. Safe to call again at runtime (app data "load" phase);
-        /// the old subscription is torn down and a new one is created, because the
-        /// subscription properties themselves may have changed.
+        /// Applies a configuration. Safe to call again at runtime (app data "load"
+        /// phase); the old subscription is torn down and a new one is created,
+        /// because the subscription properties themselves may have changed.
         /// </summary>
         public bool Apply(MapperConfig config)
         {
-            ArgumentNullException.ThrowIfNull(config);
+            if (config == null)
+            {
+                throw new ArgumentNullException(nameof(config));
+            }
 
-            var mappings = config.GetValidMappings();
+            List<NodeMapping> mappings = config.GetValidMappings();
+
             if (mappings.Count == 0)
             {
                 Console.WriteLine("No usable mappings configured.");
@@ -79,24 +90,31 @@ namespace Samples.Datalayer.Mapper
             }
 
             // 1. Iterate over all pairs and build the source -> destinations map.
-            var routes = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-            foreach (var mapping in mappings)
+            Dictionary<string, List<string>> collected =
+                new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+            for (int i = 0; i < mappings.Count; i++)
             {
-                if (!routes.TryGetValue(mapping.Source, out var destinations))
+                NodeMapping mapping = mappings[i];
+                List<string>? destinations;
+
+                if (!collected.TryGetValue(mapping.Source, out destinations))
                 {
-                    destinations = [];
-                    routes[mapping.Source] = destinations;
+                    destinations = new List<string>();
+                    collected.Add(mapping.Source, destinations);
                 }
 
                 destinations.Add(mapping.Destination);
             }
 
-            // Publish the finished table as a single reference assignment. The
-            // callback picks it up on its next read; no lock, no torn state.
-            var published = new Dictionary<string, string[]>(routes.Count, StringComparer.Ordinal);
-            foreach (var (source, destinations) in routes)
+            // Freeze into arrays. The finished table is published as a single
+            // reference assignment; the callback picks it up on its next read.
+            Dictionary<string, string[]> published =
+                new Dictionary<string, string[]>(collected.Count, StringComparer.Ordinal);
+
+            foreach (KeyValuePair<string, List<string>> entry in collected)
             {
-                published[source] = [.. destinations];
+                published.Add(entry.Key, entry.Value.ToArray());
             }
 
             PublishRoutes(published);
@@ -107,48 +125,62 @@ namespace Samples.Datalayer.Mapper
             ClearPending();
 
             // 2. One subscription for all sources.
-            var propertiesBuilder = new SubscriptionPropertiesBuilder(config.SubscriptionId)
-                .SetPublishIntervalMillis(config.PublishIntervalMillis)
-                .SetKeepAliveIntervalMillis(config.KeepaliveIntervalMillis)
-                .SetErrorIntervalMillis(config.ErrorIntervalMillis)
-                .SetSamplingIntervalMicros(config.SamplingIntervalMicros);
+            SubscriptionPropertiesBuilder propertiesBuilder =
+                new SubscriptionPropertiesBuilder(config.SubscriptionId);
+
+            propertiesBuilder.SetPublishIntervalMillis(config.PublishIntervalMillis);
+            propertiesBuilder.SetKeepAliveIntervalMillis(config.KeepaliveIntervalMillis);
+            propertiesBuilder.SetErrorIntervalMillis(config.ErrorIntervalMillis);
+            propertiesBuilder.SetSamplingIntervalMicros(config.SamplingIntervalMicros);
 
             if (config.DeadbandValue > 0.0f)
             {
                 propertiesBuilder.SetDataChangeFilter(config.DeadbandValue);
             }
 
-            var properties = propertiesBuilder.Build();
+            Variant properties = propertiesBuilder.Build();
 
-            var (createResult, subscription) = _client.CreateSubscription(properties, userData: null);
+            DLR_RESULT createResult;
+            ISubscription subscription;
+
+            (createResult, subscription) = _client.CreateSubscription(properties, null);
+
             if (createResult.IsBad())
             {
-                Console.WriteLine($"Failed to create subscription '{config.SubscriptionId}': {createResult}");
+                Console.WriteLine(
+                    "Failed to create subscription '" + config.SubscriptionId + "': " + createResult);
                 return false;
             }
 
             subscription.DataChanged += OnDataChanged;
             _subscription = subscription;
 
-            var sources = published.Keys.ToArray();
-            var subscribeResult = subscription.SubscribeMulti(sources);
+            string[] sources = new string[published.Count];
+            published.Keys.CopyTo(sources, 0);
+
+            DLR_RESULT subscribeResult = subscription.SubscribeMulti(sources);
+
             if (subscribeResult.IsBad())
             {
-                // A single unreachable address fails the whole multi-subscribe, so fall
-                // back to subscribing one by one and keep the addresses that work.
-                Console.WriteLine($"SubscribeMulti failed: {subscribeResult} -> subscribing individually.");
+                // A single unreachable address fails the whole multi-subscribe, so
+                // fall back to subscribing one by one and keep what works.
+                Console.WriteLine(
+                    "SubscribeMulti failed: " + subscribeResult + " -> subscribing individually.");
 
-                var subscribed = 0;
-                foreach (var source in sources)
+                int subscribed = 0;
+
+                for (int i = 0; i < sources.Length; i++)
                 {
-                    var singleResult = subscription.Subscribe(source);
+                    DLR_RESULT singleResult = subscription.Subscribe(sources[i]);
+
                     if (singleResult.IsBad())
                     {
-                        Console.WriteLine($"Failed to subscribe '{source}': {singleResult}");
+                        Console.WriteLine(
+                            "Failed to subscribe '" + sources[i] + "': " + singleResult);
                         continue;
                     }
 
-                    subscribed++;
+                    subscribed = subscribed + 1;
                 }
 
                 if (subscribed == 0)
@@ -159,23 +191,31 @@ namespace Samples.Datalayer.Mapper
                 }
             }
 
-            foreach (var mapping in mappings)
+            for (int i = 0; i < mappings.Count; i++)
             {
-                Console.WriteLine($"Mapping: {mapping}");
+                Console.WriteLine("Mapping: " + mappings[i]);
             }
 
             Console.WriteLine(
-                $"Subscription '{config.SubscriptionId}' active: {sources.Length} source(s), " +
-                $"{mappings.Count} destination(s), publish interval {config.PublishIntervalMillis} ms.");
+                "Subscription '" + config.SubscriptionId + "' active: " +
+                sources.Length + " source(s), " +
+                mappings.Count + " destination(s), publish interval " +
+                config.PublishIntervalMillis + " ms.");
 
-            // 3. Start the flush loop once.
-            _flushTask ??= Task.Run(() => FlushLoopAsync(_cts.Token));
+            // 3. Start the flush loop once. The method yields at its first await,
+            //    so calling it directly is enough - no Task.Run needed.
+            if (_flushTask == null)
+            {
+                _flushTask = FlushLoopAsync(_cancellation.Token);
+            }
 
             return true;
         }
 
-        private void PublishRoutes(Dictionary<string, string[]> routes) =>
+        private void PublishRoutes(Dictionary<string, string[]> routes)
+        {
             Volatile.Write(ref _routes, routes);
+        }
 
         /// <summary>
         /// Data change callback.
@@ -188,12 +228,12 @@ namespace Samples.Datalayer.Mapper
         {
             if (args.Result.IsBad())
             {
-                Console.WriteLine($"Data change notification reported: {args.Result}");
+                Console.WriteLine("Data change notification reported: " + args.Result);
                 return;
             }
 
-            var notifyInfo = NotifyInfo.GetRootAsNotifyInfo(args.Item.Info.ToFlatbuffers());
-            var source = notifyInfo.Node;
+            NotifyInfo notifyInfo = NotifyInfo.GetRootAsNotifyInfo(args.Item.Info.ToFlatbuffers());
+            string source = notifyInfo.Node;
 
             if (string.IsNullOrEmpty(source))
             {
@@ -201,19 +241,23 @@ namespace Samples.Datalayer.Mapper
             }
 
             // Lock-free read: the table is immutable, only the reference changes.
-            var routes = Volatile.Read(ref _routes);
-            if (!routes.TryGetValue(source, out var destinations))
+            Dictionary<string, string[]> routes = Volatile.Read(ref _routes);
+            string[]? destinations;
+
+            if (!routes.TryGetValue(source, out destinations))
             {
                 return;
             }
 
-            foreach (var destination in destinations)
+            for (int i = 0; i < destinations.Length; i++)
             {
-                // The notification value is owned by the subscription and is not valid
-                // after this callback returns, so take a copy per destination.
-                // Allocated outside the lock.
-                var value = new Variant(args.Item.Value);
-                IVariant? superseded = null;
+                string destination = destinations[i];
+
+                // The notification value is owned by the subscription and is not
+                // valid after this callback returns, so take a copy per
+                // destination. Allocated outside the lock.
+                Variant value = new Variant(args.Item.Value);
+                IVariant? superseded;
 
                 lock (_swapLock)
                 {
@@ -223,9 +267,12 @@ namespace Samples.Datalayer.Mapper
                     _activeBuffer[destination] = value;
                 }
 
-                // Dispose outside the lock; once removed from the buffer, nobody
+                // Disposed outside the lock: once removed from the buffer, nothing
                 // else can reach it.
-                superseded?.Dispose();
+                if (superseded != null)
+                {
+                    superseded.Dispose();
+                }
             }
 
             Signal();
@@ -249,8 +296,10 @@ namespace Samples.Datalayer.Mapper
                     await _flushSignal.WaitAsync(cancellationToken);
                     Interlocked.Exchange(ref _signaled, 0);
 
-                    // Let the rest of the publish batch arrive so it goes out in one write.
-                    var debounce = _config.WriteDebounceMillis;
+                    // Let the rest of the publish batch arrive so it goes out in
+                    // one write.
+                    int debounce = _config.WriteDebounceMillis;
+
                     if (debounce > 0)
                     {
                         await Task.Delay(debounce, cancellationToken);
@@ -265,7 +314,7 @@ namespace Samples.Datalayer.Mapper
                 catch (Exception exc)
                 {
                     // Never let the loop die on a single bad batch.
-                    Console.WriteLine($"Bulk write cycle failed! {exc.Message}");
+                    Console.WriteLine("Bulk write cycle failed! " + exc.Message);
                 }
             }
         }
@@ -273,8 +322,9 @@ namespace Samples.Datalayer.Mapper
         /// <summary>
         /// 4. Swaps the buffers and writes the retired one in a single bulk write.
         ///
-        /// Only ever called from the flush loop, so the retired buffer is guaranteed
-        /// to be emptied and back in place as the spare before the next swap.
+        /// Only ever called from the flush loop, so the retired buffer is
+        /// guaranteed to be emptied and back in place as the spare before the
+        /// next swap.
         /// </summary>
         private async Task FlushAsync()
         {
@@ -295,41 +345,49 @@ namespace Samples.Datalayer.Mapper
             }
 
             // From here on the batch is ours alone - no lock needed.
-            var addresses = new string[batch.Count];
-            var values = new IVariant[batch.Count];
+            string[] addresses = new string[batch.Count];
+            IVariant[] values = new IVariant[batch.Count];
 
-            var index = 0;
-            foreach (var (address, value) in batch)
+            int index = 0;
+
+            foreach (KeyValuePair<string, IVariant> entry in batch)
             {
-                addresses[index] = address;
-                values[index] = value;
-                index++;
+                addresses[index] = entry.Key;
+                values[index] = entry.Value;
+                index = index + 1;
             }
 
             try
             {
                 // Bulk write: one round trip for the whole batch.
-                var bulkResult = await _client.BulkWriteAsync(addresses, values);
+                IClientAsyncBulkResult bulkResult = await _client.BulkWriteAsync(addresses, values);
 
                 if (bulkResult.Result.IsBad())
                 {
-                    Console.WriteLine($"BulkWrite of {addresses.Length} node(s) failed: {bulkResult.Result}");
+                    Console.WriteLine(
+                        "BulkWrite of " + addresses.Length + " node(s) failed: " + bulkResult.Result);
                     return;
                 }
 
-                foreach (var item in bulkResult.Items ?? [])
+                IBulkItem[] items = bulkResult.Items;
+
+                if (items != null)
                 {
-                    if (item.Result.IsBad())
+                    for (int i = 0; i < items.Length; i++)
                     {
-                        Console.WriteLine($"Write failed for '{item.Address}': {item.Result}");
+                        if (items[i].Result.IsBad())
+                        {
+                            Console.WriteLine(
+                                "Write failed for '" + items[i].Address + "': " + items[i].Result);
+                        }
                     }
                 }
             }
             finally
             {
-                foreach (var value in values)
+                for (int i = 0; i < values.Length; i++)
                 {
-                    value.Dispose();
+                    values[i].Dispose();
                 }
 
                 // Hand the buffer back empty, ready to be swapped in again.
@@ -341,12 +399,12 @@ namespace Samples.Datalayer.Mapper
         {
             lock (_swapLock)
             {
-                foreach (var value in _activeBuffer.Values)
+                foreach (IVariant value in _activeBuffer.Values)
                 {
                     value.Dispose();
                 }
 
-                foreach (var value in _spareBuffer.Values)
+                foreach (IVariant value in _spareBuffer.Values)
                 {
                     value.Dispose();
                 }
@@ -358,7 +416,7 @@ namespace Samples.Datalayer.Mapper
 
         private void DisposeSubscription()
         {
-            if (_subscription is null)
+            if (_subscription == null)
             {
                 return;
             }
@@ -373,9 +431,9 @@ namespace Samples.Datalayer.Mapper
         {
             DisposeSubscription();
 
-            _cts.Cancel();
+            _cancellation.Cancel();
 
-            if (_flushTask is not null)
+            if (_flushTask != null)
             {
                 try
                 {
@@ -391,7 +449,7 @@ namespace Samples.Datalayer.Mapper
 
             ClearPending();
 
-            _cts.Dispose();
+            _cancellation.Dispose();
             _flushSignal.Dispose();
         }
     }

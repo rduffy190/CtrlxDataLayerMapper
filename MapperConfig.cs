@@ -5,7 +5,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -15,86 +14,92 @@ namespace Samples.Datalayer.Mapper
     /// <summary>
     /// A single source -> destination node pair.
     /// </summary>
-    public sealed record NodeMapping
+    public sealed class NodeMapping
     {
         /// <summary>The ctrlX Data Layer address to subscribe to.</summary>
-        public string Source { get; init; } = string.Empty;
+        public string Source { get; set; } = string.Empty;
 
         /// <summary>The ctrlX Data Layer address the source value is written to.</summary>
-        public string Destination { get; init; } = string.Empty;
+        public string Destination { get; set; } = string.Empty;
 
         /// <summary>Set to false to keep a pair in the file but exclude it from the run.</summary>
-        public bool Enabled { get; init; } = true;
+        public bool Enabled { get; set; } = true;
 
-        public override string ToString() => $"{Source} -> {Destination}";
+        public override string ToString()
+        {
+            return Source + " -> " + Destination;
+        }
     }
 
     /// <summary>
     /// The application configuration.
     ///
-    /// NOTE: The ctrlX persistence guideline requires a JSON *object* as root element
-    /// (not an array), so the list of pairs lives under the "mappings" member.
+    /// NOTE: The ctrlX persistence guideline requires a JSON *object* as root
+    /// element (not an array), so the list of pairs lives under "mappings".
     /// </summary>
-    public sealed record MapperConfig
+    public sealed class MapperConfig
     {
         /// <summary>Id of the ctrlX Data Layer subscription.</summary>
-        public string SubscriptionId { get; init; } = "net-node-mapper";
+        public string SubscriptionId { get; set; } = "net-node-mapper";
 
         /// <summary>Publish interval of the subscription in milliseconds.</summary>
-        public uint PublishIntervalMillis { get; init; } = 1000;
+        public uint PublishIntervalMillis { get; set; } = 1000;
 
         /// <summary>Keep alive interval of the subscription in milliseconds.</summary>
-        public uint KeepaliveIntervalMillis { get; init; } = 10000;
+        public uint KeepaliveIntervalMillis { get; set; } = 10000;
 
         /// <summary>Error interval of the subscription in milliseconds.</summary>
-        public uint ErrorIntervalMillis { get; init; } = 10000;
+        public uint ErrorIntervalMillis { get; set; } = 10000;
 
         /// <summary>Sampling interval of the subscription in microseconds.</summary>
-        public ulong SamplingIntervalMicros { get; init; } = 1000000;
+        public ulong SamplingIntervalMicros { get; set; } = 1000000;
 
         /// <summary>Absolute deadband. 0 publishes every change.</summary>
-        public float DeadbandValue { get; init; } = 0.0f;
+        public float DeadbandValue { get; set; } = 0.0f;
 
         /// <summary>
-        /// Grace period after the first pending change before the bulk write is issued.
-        /// Lets the values of one publish batch coalesce into a single bulk write.
+        /// Grace period after the first pending change before the bulk write is
+        /// issued. Lets the values of one publish batch coalesce into one write.
         /// </summary>
-        public int WriteDebounceMillis { get; init; } = 50;
+        public int WriteDebounceMillis { get; set; } = 50;
 
         /// <summary>The source/destination pairs.</summary>
-        public IReadOnlyList<NodeMapping> Mappings { get; init; } = Array.Empty<NodeMapping>();
+        public List<NodeMapping> Mappings { get; set; } = new List<NodeMapping>();
 
         /// <summary>
         /// Returns the usable pairs and reports the rejected ones.
         /// </summary>
-        public IReadOnlyList<NodeMapping> GetValidMappings()
+        public List<NodeMapping> GetValidMappings()
         {
-            var valid = new List<NodeMapping>();
-            var seenDestinations = new HashSet<string>(StringComparer.Ordinal);
+            List<NodeMapping> valid = new List<NodeMapping>();
+            HashSet<string> seenDestinations = new HashSet<string>(StringComparer.Ordinal);
 
-            foreach (var mapping in Mappings)
+            for (int i = 0; i < Mappings.Count; i++)
             {
+                NodeMapping mapping = Mappings[i];
+
                 if (!mapping.Enabled)
                 {
                     continue;
                 }
 
-                if (string.IsNullOrWhiteSpace(mapping.Source) || string.IsNullOrWhiteSpace(mapping.Destination))
+                if (string.IsNullOrWhiteSpace(mapping.Source) ||
+                    string.IsNullOrWhiteSpace(mapping.Destination))
                 {
-                    Console.WriteLine($"Skipping mapping with empty address: '{mapping}'.");
+                    Console.WriteLine("Skipping mapping with empty address: '" + mapping + "'.");
                     continue;
                 }
 
                 if (string.Equals(mapping.Source, mapping.Destination, StringComparison.Ordinal))
                 {
-                    Console.WriteLine($"Skipping self-referencing mapping: '{mapping}'.");
+                    Console.WriteLine("Skipping self-referencing mapping: '" + mapping + "'.");
                     continue;
                 }
 
-                // Two sources feeding one destination means the last publish always wins.
+                // Two sources feeding one destination means the last publish wins.
                 if (!seenDestinations.Add(mapping.Destination))
                 {
-                    Console.WriteLine($"Skipping mapping with duplicate destination: '{mapping}'.");
+                    Console.WriteLine("Skipping mapping with duplicate destination: '" + mapping + "'.");
                     continue;
                 }
 
@@ -110,7 +115,9 @@ namespace Samples.Datalayer.Mapper
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
     [JsonSerializable(typeof(MapperConfig))]
-    internal partial class MapperConfigSerializerContext : JsonSerializerContext { }
+    internal partial class MapperConfigSerializerContext : JsonSerializerContext
+    {
+    }
 
     /// <summary>
     /// Reads and writes the configuration in the ctrlX app data storage.
@@ -125,50 +132,95 @@ namespace Samples.Datalayer.Mapper
 
         private const string StorageFileName = "mappings.json";
 
-        public static bool IsSnapped => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SNAP"));
+        public static bool IsSnapped
+        {
+            get
+            {
+                string? snap = Environment.GetEnvironmentVariable("SNAP");
+                return !string.IsNullOrEmpty(snap);
+            }
+        }
 
-        private static string SnapCommonLocation => Environment.GetEnvironmentVariable("SNAP_COMMON") ?? string.Empty;
+        private static string BaseStorageLocation
+        {
+            get
+            {
+                if (IsSnapped)
+                {
+                    string snapCommon = Environment.GetEnvironmentVariable("SNAP_COMMON") ?? string.Empty;
+                    return Path.Combine(snapCommon, "solutions", "activeConfiguration");
+                }
 
-        private static string BaseStorageLocation => IsSnapped
-            ? Path.Combine(SnapCommonLocation, "solutions", "activeConfiguration")
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "My ctrlX");
+                string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                return Path.Combine(documents, "My ctrlX");
+            }
+        }
 
-        public static string StorageLocation => Path.Combine(BaseStorageLocation, StorageFolderName);
+        public static string StorageLocation
+        {
+            get { return Path.Combine(BaseStorageLocation, StorageFolderName); }
+        }
 
-        public static string StorageFile => Path.Combine(StorageLocation, StorageFileName);
+        public static string StorageFile
+        {
+            get { return Path.Combine(StorageLocation, StorageFileName); }
+        }
 
         /// <summary>
-        /// Loads the configuration. Writes a template on first start so the user has
-        /// something to edit in the "Manage app data" view.
+        /// Loads the configuration. Writes a template on first start so the user
+        /// has something to edit in the "Manage app data" view.
         /// </summary>
         public static MapperConfig? Load()
         {
-            var path = StorageFile;
+            string path = StorageFile;
 
             if (!File.Exists(path))
             {
-                Console.WriteLine($"No configuration found at '{path}' -> creating a template.");
-                var template = CreateTemplate();
-                return Save(template) ? template : null;
+                Console.WriteLine("No configuration found at '" + path + "' -> creating a template.");
+
+                MapperConfig template = CreateTemplate();
+
+                if (!Save(template))
+                {
+                    return null;
+                }
+
+                return template;
             }
 
             try
             {
-                var json = File.ReadAllText(path, Encoding.UTF8);
-                var config = JsonSerializer.Deserialize(json, MapperConfigSerializerContext.Default.MapperConfig);
+                string json = File.ReadAllText(path, Encoding.UTF8);
 
-                if (config is null)
+                MapperConfig? config = JsonSerializer.Deserialize(
+                    json,
+                    MapperConfigSerializerContext.Default.MapperConfig);
+
+                if (config == null)
                 {
-                    Console.WriteLine($"Configuration '{path}' is empty.");
+                    Console.WriteLine("Configuration '" + path + "' is empty.");
                     return null;
                 }
 
-                Console.WriteLine($"Loaded configuration from '{path}' ({config.Mappings.Count} mapping(s)).");
+                Console.WriteLine(
+                    "Loaded configuration from '" + path + "' (" +
+                    config.Mappings.Count + " mapping(s)).");
+
                 return config;
             }
-            catch (Exception exc) when (exc is IOException || exc is JsonException || exc is UnauthorizedAccessException)
+            catch (IOException exc)
             {
-                Console.WriteLine($"Loading configuration from '{path}' failed! {exc.Message}");
+                Console.WriteLine("Loading configuration from '" + path + "' failed! " + exc.Message);
+                return null;
+            }
+            catch (UnauthorizedAccessException exc)
+            {
+                Console.WriteLine("Loading configuration from '" + path + "' failed! " + exc.Message);
+                return null;
+            }
+            catch (JsonException exc)
+            {
+                Console.WriteLine("Parsing configuration '" + path + "' failed! " + exc.Message);
                 return null;
             }
         }
@@ -183,25 +235,33 @@ namespace Samples.Datalayer.Mapper
                 return false;
             }
 
-            var path = StorageFile;
+            string path = StorageFile;
 
             try
             {
-                var json = JsonSerializer.Serialize(config, MapperConfigSerializerContext.Default.MapperConfig);
+                string json = JsonSerializer.Serialize(
+                    config,
+                    MapperConfigSerializerContext.Default.MapperConfig);
+
                 File.WriteAllText(path, json, Encoding.UTF8);
-                Console.WriteLine($"Saved configuration to '{path}'.");
+                Console.WriteLine("Saved configuration to '" + path + "'.");
                 return true;
             }
-            catch (Exception exc) when (exc is IOException || exc is UnauthorizedAccessException)
+            catch (IOException exc)
             {
-                Console.WriteLine($"Saving configuration to '{path}' failed! {exc.Message}");
+                Console.WriteLine("Saving configuration to '" + path + "' failed! " + exc.Message);
+                return false;
+            }
+            catch (UnauthorizedAccessException exc)
+            {
+                Console.WriteLine("Saving configuration to '" + path + "' failed! " + exc.Message);
                 return false;
             }
         }
 
         private static bool EnsureStorageLocation()
         {
-            var path = StorageLocation;
+            string path = StorageLocation;
 
             if (Directory.Exists(path))
             {
@@ -211,12 +271,17 @@ namespace Samples.Datalayer.Mapper
             try
             {
                 Directory.CreateDirectory(path);
-                Console.WriteLine($"Created storage location '{path}'.");
+                Console.WriteLine("Created storage location '" + path + "'.");
                 return true;
             }
-            catch (Exception exc) when (exc is IOException || exc is UnauthorizedAccessException)
+            catch (IOException exc)
             {
-                Console.WriteLine($"Creating storage location '{path}' failed! {exc.Message}");
+                Console.WriteLine("Creating storage location '" + path + "' failed! " + exc.Message);
+                return false;
+            }
+            catch (UnauthorizedAccessException exc)
+            {
+                Console.WriteLine("Creating storage location '" + path + "' failed! " + exc.Message);
                 return false;
             }
         }
@@ -224,21 +289,21 @@ namespace Samples.Datalayer.Mapper
         /// <summary>
         /// A template using nodes that exist on every ctrlX CORE.
         /// </summary>
-        private static MapperConfig CreateTemplate() => new()
+        private static MapperConfig CreateTemplate()
         {
-            Mappings =
-            [
-                new NodeMapping
-                {
-                    Source = "framework/metrics/system/cpu-utilisation-percent",
-                    Destination = "sdk/net/mapper/cpu-utilisation-percent"
-                },
-                new NodeMapping
-                {
-                    Source = "framework/metrics/system/memused-percent",
-                    Destination = "sdk/net/mapper/memused-percent"
-                }
-            ]
-        };
+            NodeMapping cpu = new NodeMapping();
+            cpu.Source = "framework/metrics/system/cpu-utilisation-percent";
+            cpu.Destination = "sdk/net/mapper/cpu-utilisation-percent";
+
+            NodeMapping memory = new NodeMapping();
+            memory.Source = "framework/metrics/system/memused-percent";
+            memory.Destination = "sdk/net/mapper/memused-percent";
+
+            MapperConfig config = new MapperConfig();
+            config.Mappings.Add(cpu);
+            config.Mappings.Add(memory);
+
+            return config;
+        }
     }
 }
