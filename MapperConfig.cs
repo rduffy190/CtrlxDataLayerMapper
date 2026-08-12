@@ -287,21 +287,35 @@ namespace Samples.Datalayer.Mapper
         }
 
         /// <summary>
-        /// A template using nodes that exist on every ctrlX CORE.
+        /// The template written on first start: AR1..AR10 from the PLC test read
+        /// nodes onto the matching test write nodes.
         /// </summary>
         private static MapperConfig CreateTemplate()
         {
-            NodeMapping cpu = new NodeMapping();
-            cpu.Source = "framework/metrics/system/cpu-utilisation-percent";
-            cpu.Destination = "sdk/net/mapper/cpu-utilisation-percent";
-
-            NodeMapping memory = new NodeMapping();
-            memory.Source = "framework/metrics/system/memused-percent";
-            memory.Destination = "sdk/net/mapper/memused-percent";
+            const int mappingCount = 10;
+            const string sourcePrefix = "plc/app/Application/sym/TestReadNodes/AR";
+            const string destinationPrefix = "plc/app/Application/sym/TestWriteNodes/AR";
 
             MapperConfig config = new MapperConfig();
-            config.Mappings.Add(cpu);
-            config.Mappings.Add(memory);
+
+            config.SubscriptionId = "net-node-mapper";
+            config.PublishIntervalMillis = 500;
+            config.KeepaliveIntervalMillis = 10000;
+            config.ErrorIntervalMillis = 10000;
+            config.SamplingIntervalMicros = 500000;
+            config.DeadbandValue = 0.0f;
+            config.WriteDebounceMillis = 50;
+
+            for (int i = 1; i <= mappingCount; i++)
+            {
+                NodeMapping mapping = new NodeMapping();
+
+                mapping.Source = sourcePrefix + i;
+                mapping.Destination = destinationPrefix + i;
+                mapping.Enabled = true;
+
+                config.Mappings.Add(mapping);
+            }
 
             return config;
         }
