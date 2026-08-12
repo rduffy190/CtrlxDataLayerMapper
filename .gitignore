@@ -1,0 +1,9 @@
+*.snap 
+bin/ 
+.craft/ 
+obj/ 
+overlay/ 
+parts/ 
+prime/ 
+publish/ 
+stage/ 

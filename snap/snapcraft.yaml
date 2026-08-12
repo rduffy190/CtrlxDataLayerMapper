@@ -1,0 +1,75 @@
+name: sdk-net-datalayer-mapper
+title: SDK .NET Data Layer Node Mapper
+base: core24
+version: 1.0.0
+summary: Bridnges Data Layer Nodes.
+description: |
+  Reads a list of source/destination node pairs from the ctrlX app data storage,
+  subscribes to all source nodes and forwards every data change to the mapped
+  destination nodes in a single bulk write.
+grade: stable
+
+license: MIT
+
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+    build-on: [amd64, arm64]
+    build-for: [arm64]
+
+apps:
+  app:
+    command: datalayer.mapper
+    plugs:
+      - network
+      - network-bind
+      - datalayer
+      - active-solution
+    daemon: simple
+    restart-condition: always
+    passthrough:
+      restart-delay: 10s
+
+    environment:
+      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:$SNAP
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "true"
+
+parts:
+  app:
+    plugin: dump
+    source: ./publish
+
+  configs:
+    source: ./configs
+    plugin: dump
+    organize:
+      "package-assets/*": package-assets/${CRAFT_PROJECT_NAME}/
+
+slots:
+  package-assets:
+    interface: content
+    content: package-assets
+    source:
+      read:
+        - $SNAP/package-assets/${CRAFT_PROJECT_NAME}
+  package-run:
+    interface: content
+    content: package-run
+    source:
+      write:
+        - $SNAP_DATA/package-run/${CRAFT_PROJECT_NAME}
+
+plugs:
+  # Access to the ctrlX Data Layer (ipc).
+  datalayer:
+    interface: content
+    content: datalayer
+    target: $SNAP_DATA/.datalayer
+
+  # Access to the Solutions storage -> $SNAP_COMMON/solutions/activeConfiguration
+  active-solution:
+    interface: content
+    content: solutions
+    target: $SNAP_COMMON/solutions

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.boschrexroth.com/ctrlx-automation/ctrlx-core/apps/package-manifest/package-manifest.v1.6.schema.json",
+  "version": "1.0.0",
+  "id": "sdk-net-datalayer-mapper",
+  "services": {
+    "proxyMapping": [
+      {
+        "name": "sdk-net-datalayer-mapper.web",
+        "url": "/sdk-net-datalayer-mapper",
+        "binding": ":5556",
+        "restricted": [
+          "/sdk-net-datalayer-mapper/api/v1"
+        ]
+      }
+    ]
+  },
+  "commands": {
+    "activeConfiguration": {
+      "load": [
+        {
+          "id": "sdk-net-datalayer-mapper",
+          "subject": "ctrlX Data Layer node mappings",
+          "url": "http://localhost:5556/sdk-net-datalayer-mapper/api/v1/load"
+        }
+      ],
+      "save": [
+        {
+          "id": "sdk-net-datalayer-mapper",
+          "subject": "ctrlX Data Layer node mappings",
+          "url": "http://localhost:5556/sdk-net-datalayer-mapper/api/v1/save"
+        }
+      ]
+    }
+  },
+  "scopes-declaration": [
+    {
+      "identifier": "sdk-net-datalayer-mapper.web",
+      "name": "sdk-net-datalayer-mapper",
+      "description": "ctrlX Data Layer node mapper permissions",
+      "scopes": [
+        {
+          "identifier": "sdk-net-datalayer-mapper.web.rwx",
+          "name": "Manage ctrlX Data Layer node mappings",
+          "description": ""
+        },
+        {
+          "identifier": "sdk-net-datalayer-mapper.web.r",
+          "name": "View ctrlX Data Layer node mappings",
+          "description": ""
+        }
+      ]
+    }
+  ],
+  "configuration": {
+    "appDirectories": [
+      {
+        "name": "sdk-net-datalayer-mapper",
+        "description": "ctrlX Data Layer node mappings",
+        "icon": "bosch-ic-directory",
+        "copyOnLoad": true,
+        "writeProtected": false
+      }
+    ]
+  }
+}

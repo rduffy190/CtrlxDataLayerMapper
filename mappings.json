@@ -1,0 +1,31 @@
+{
+  "subscriptionId": "net-node-mapper",
+  "publishIntervalMillis": 1000,
+  "keepaliveIntervalMillis": 10000,
+  "errorIntervalMillis": 10000,
+  "samplingIntervalMicros": 1000000,
+  "deadbandValue": 0.0,
+  "writeDebounceMillis": 50,
+  "mappings": [
+    {
+      "source": "framework/metrics/system/cpu-utilisation-percent",
+      "destination": "plc/app/Application/sym/PLC_PRG/cpuLoad",
+      "enabled": true
+    },
+    {
+      "source": "framework/metrics/system/memused-percent",
+      "destination": "plc/app/Application/sym/PLC_PRG/memUsed",
+      "enabled": true
+    },
+    {
+      "source": "framework/metrics/system/memavailable-mb",
+      "destination": "plc/app/Application/sym/PLC_PRG/memAvailable",
+      "enabled": true
+    },
+    {
+      "source": "motion/axs/AxisX/state/values/actual/pos",
+      "destination": "plc/app/Application/sym/PLC_PRG/axisXPosition",
+      "enabled": false
+    }
+  ]
+}
