@@ -1,31 +1,61 @@
 {
   "subscriptionId": "net-node-mapper",
-  "publishIntervalMillis": 1000,
+  "publishIntervalMillis": 500,
   "keepaliveIntervalMillis": 10000,
   "errorIntervalMillis": 10000,
-  "samplingIntervalMicros": 1000000,
-  "deadbandValue": 0.0,
+  "samplingIntervalMicros": 500000,
+  "deadbandValue": 0,
   "writeDebounceMillis": 50,
   "mappings": [
     {
-      "source": "framework/metrics/system/cpu-utilisation-percent",
-      "destination": "plc/app/Application/sym/PLC_PRG/cpuLoad",
+      "source": "plc/app/Application/sym/TestReadNodes/AR1",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR1",
       "enabled": true
     },
     {
-      "source": "framework/metrics/system/memused-percent",
-      "destination": "plc/app/Application/sym/PLC_PRG/memUsed",
+      "source": "plc/app/Application/sym/TestReadNodes/AR2",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR2",
       "enabled": true
     },
     {
-      "source": "framework/metrics/system/memavailable-mb",
-      "destination": "plc/app/Application/sym/PLC_PRG/memAvailable",
+      "source": "plc/app/Application/sym/TestReadNodes/AR3",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR3",
       "enabled": true
     },
     {
-      "source": "motion/axs/AxisX/state/values/actual/pos",
-      "destination": "plc/app/Application/sym/PLC_PRG/axisXPosition",
-      "enabled": false
+      "source": "plc/app/Application/sym/TestReadNodes/AR4",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR4",
+      "enabled": true
+    },
+    {
+      "source": "plc/app/Application/sym/TestReadNodes/AR5",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR5",
+      "enabled": true
+    },
+    {
+      "source": "plc/app/Application/sym/TestReadNodes/AR6",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR6",
+      "enabled": true
+    },
+    {
+      "source": "plc/app/Application/sym/TestReadNodes/AR7",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR7",
+      "enabled": true
+    },
+    {
+      "source": "plc/app/Application/sym/TestReadNodes/AR8",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR8",
+      "enabled": true
+    },
+    {
+      "source": "plc/app/Application/sym/TestReadNodes/AR9",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR9",
+      "enabled": true
+    },
+    {
+      "source": "plc/app/Application/sym/TestReadNodes/AR10",
+      "destination": "plc/app/Application/sym/TestWriteNodes/AR10",
+      "enabled": true
     }
   ]
 }
