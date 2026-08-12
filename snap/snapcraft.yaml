@@ -2,7 +2,7 @@ name: sdk-net-datalayer-mapper
 title: SDK .NET Data Layer Node Mapper
 base: core24
 version: 1.0.0
-summary: Bridnges Data Layer Nodes.
+summary: Bridges Data Layer Nodes.
 description: |
   Reads a list of source/destination node pairs from the ctrlX app data storage,
   subscribes to all source nodes and forwards every data change to the mapped

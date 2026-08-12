@@ -7,4 +7,4 @@ rm -rf ${PUBLISH_DIR}
 
 dotnet publish --configuration Release --runtime ${TARGET_DOTNET} --property:PublishDir=${PUBLISH_DIR} --self-contained true /property:GenerateFullPaths=true /property:PublishSingleFile=true /property:PublishTrimmed=true /property:DebugType=None /property:DebugSymbols=false
 
-../../scripts/build-snap-arm64.sh
+/home/riley/ctrlx-automation-sdk/scripts/build-snap-arm64.sh
